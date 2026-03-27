@@ -1,0 +1,6 @@
+streamlit
+anthropic
+requests
+beautifulsoup4
+pandas
+openpyxl
