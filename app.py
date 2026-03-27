@@ -482,8 +482,21 @@ run = st.button("▶ Run Audit", type="primary", disabled=not (api_key and urls)
 if not api_key:
     st.warning("Add your Anthropic API key in the sidebar to get started.")
 
+# ── Init session state ─────────────────────────────────────────
+if "audit_df" not in st.session_state:
+    st.session_state.audit_df = None
+if "audit_done" not in st.session_state:
+    st.session_state.audit_done = False
+if "sheet_url" not in st.session_state:
+    st.session_state.sheet_url = None
+
 if run and api_key and urls:
-    client = anthropic.Anthropic(api_key=api_key)
+    # Reset on new run
+    st.session_state.audit_df   = None
+    st.session_state.audit_done = False
+    st.session_state.sheet_url  = None
+
+    client  = anthropic.Anthropic(api_key=api_key)
     results = []
     errors  = []
 
@@ -547,40 +560,49 @@ if run and api_key and urls:
     status.markdown(f"✅ **Done!** {len(results)} audited, {len(errors)} failed.")
 
     if results:
-        st.divider()
-        st.subheader("📊 Export results")
+        st.session_state.audit_df   = results_to_df(results)
+        st.session_state.audit_done = True
 
-        df = results_to_df(results)
+# ── Export section (persists across reruns) ───────────────────
+if st.session_state.audit_done and st.session_state.audit_df is not None:
+    df = st.session_state.audit_df
 
-        col_a, col_b = st.columns(2)
+    st.divider()
+    st.subheader("📊 Export results")
 
-        # CSV download
-        with col_a:
-            csv_buffer = io.StringIO()
-            df.to_csv(csv_buffer, index=False)
-            st.download_button(
-                label="⬇ Download CSV",
-                data=csv_buffer.getvalue(),
-                file_name=f"seo_audit_{datetime.now().strftime('%Y-%m-%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+    col_a, col_b = st.columns(2)
 
-        # Google Sheets push
-        with col_b:
-            if sheets_token:
-                if st.button("📊 Push to Google Sheets", type="primary", use_container_width=True):
-                    with st.spinner("Creating formatted Google Sheet..."):
-                        try:
-                            sheet_url = push_to_sheets(df, sheets_token)
-                            st.success("✓ Sheet created!")
-                            st.markdown(f"**[Open in Google Sheets]({sheet_url})**")
-                        except Exception as e:
-                            st.error(f"Failed to create sheet: {e}")
-                            st.caption("Your OAuth token may have expired — get a fresh one from the sidebar.")
-            else:
-                st.info("Add a Google OAuth token in the sidebar to push directly to Sheets.")
+    # CSV download
+    with col_a:
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+        st.download_button(
+            label="⬇ Download CSV",
+            data=csv_buffer.getvalue(),
+            file_name=f"seo_audit_{datetime.now().strftime('%Y-%m-%d')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
 
-        st.divider()
-        st.subheader("📋 Full results table")
-        st.dataframe(df, use_container_width=True, height=400)
+    # Google Sheets push
+    with col_b:
+        if sheets_token:
+            if st.button("📊 Push to Google Sheets", type="primary", use_container_width=True):
+                with st.spinner("Creating formatted Google Sheet..."):
+                    try:
+                        sheet_url = push_to_sheets(df, sheets_token)
+                        st.session_state.sheet_url = sheet_url
+                    except Exception as e:
+                        st.error(f"Failed to create sheet: {e}")
+                        st.caption("Your OAuth token may have expired — get a fresh one from the sidebar.")
+        else:
+            st.info("Add a Google OAuth token in the sidebar to push directly to Sheets.")
+
+    # Show sheet link persistently
+    if st.session_state.sheet_url:
+        st.success("✓ Sheet created!")
+        st.markdown(f"**[Open in Google Sheets]({st.session_state.sheet_url})**")
+
+    st.divider()
+    st.subheader("📋 Full results table")
+    st.dataframe(df, use_container_width=True, height=400)
