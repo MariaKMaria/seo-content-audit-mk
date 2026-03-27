@@ -15,32 +15,13 @@ st.set_page_config(
     layout="wide"
 )
 
-# ── Styles ─────────────────────────────────────────────────────
 st.markdown("""
 <style>
 .block-container { padding-top: 2rem; }
 .stProgress > div > div { background-color: #4CAF50; }
-.metric-card {
-    background: #f8f9fa;
-    border-radius: 8px;
-    padding: 1rem;
-    text-align: center;
-    border: 1px solid #e0e0e0;
-}
-.score-high { color: #2e7d32; font-weight: bold; }
-.score-mid  { color: #f57c00; font-weight: bold; }
-.score-low  { color: #c62828; font-weight: bold; }
-.action-badge {
-    display: inline-block;
-    padding: 3px 10px;
-    border-radius: 12px;
-    font-size: 12px;
-    font-weight: bold;
-}
 </style>
 """, unsafe_allow_html=True)
 
-# ── Constants ──────────────────────────────────────────────────
 MODEL = "claude-haiku-4-5-20251001"
 MAX_HTML_CHARS = 70000
 DELAY = 2
@@ -52,6 +33,23 @@ ACTION_COLORS = {
     "Redirect":  "#ffe0b2",
     "Retire":    "#ffcdd2",
     "Remain":    "#c8e6c9",
+}
+
+ACTION_COLORS_RGB = {
+    "Reformat":  {"red": 0.88, "green": 0.75, "blue": 0.91},
+    "Repurpose": {"red": 0.68, "green": 0.85, "blue": 1.0},
+    "Refresh":   {"red": 1.0,  "green": 0.95, "blue": 0.70},
+    "Redirect":  {"red": 1.0,  "green": 0.90, "blue": 0.70},
+    "Retire":    {"red": 0.96, "green": 0.80, "blue": 0.80},
+    "Remain":    {"red": 0.83, "green": 0.94, "blue": 0.84},
+}
+
+OPPORTUNITY_COLORS_RGB = {
+    "No traffic":           {"red": 0.96, "green": 0.80, "blue": 0.80},
+    "High impr. / Low CTR": {"red": 1.0,  "green": 0.88, "blue": 0.60},
+    "Ranking opportunity":  {"red": 0.68, "green": 0.85, "blue": 1.0},
+    "Performing well":      {"red": 0.83, "green": 0.94, "blue": 0.84},
+    "New page":             {"red": 0.93, "green": 0.93, "blue": 0.93},
 }
 
 OPPORTUNITY_LABELS = {
@@ -178,15 +176,7 @@ def get_action(result):
     if content < 60: return "Refresh"
     return "Remain"
 
-def score_badge(val):
-    try:
-        v = int(val)
-        cls = "score-high" if v >= 70 else "score-mid" if v >= 50 else "score-low"
-        return f'<span class="{cls}">{v}</span>'
-    except:
-        return str(val)
-
-def load_gsc(file) -> dict:
+def load_gsc(file):
     if file is None:
         return {}
     try:
@@ -195,11 +185,11 @@ def load_gsc(file) -> dict:
         else:
             df = pd.read_csv(file)
         df.columns = [c.strip().lower() for c in df.columns]
-        url_col = next((c for c in df.columns if any(x in c for x in ["url","page","landing"])), None)
+        url_col   = next((c for c in df.columns if any(x in c for x in ["url","page","landing"])), None)
         click_col = next((c for c in df.columns if "click" in c), None)
-        imp_col = next((c for c in df.columns if "impression" in c), None)
-        ctr_col = next((c for c in df.columns if "ctr" in c or "rate" in c), None)
-        pos_col = next((c for c in df.columns if "position" in c or "rank" in c), None)
+        imp_col   = next((c for c in df.columns if "impression" in c), None)
+        ctr_col   = next((c for c in df.columns if "ctr" in c or "rate" in c), None)
+        pos_col   = next((c for c in df.columns if "position" in c or "rank" in c), None)
         gsc = {}
         for _, row in df.iterrows():
             url = str(row[url_col]).strip().rstrip("/") if url_col else ""
@@ -251,12 +241,183 @@ def results_to_df(results):
         })
     return pd.DataFrame(rows)
 
+def score_color_rgb(val):
+    try:
+        v = int(val)
+        if v >= 70: return {"red": 0.83, "green": 0.94, "blue": 0.84}
+        if v >= 50: return {"red": 1.00, "green": 0.95, "blue": 0.80}
+        return {"red": 0.96, "green": 0.80, "blue": 0.80}
+    except:
+        return {"red": 1.0, "green": 1.0, "blue": 1.0}
+
+def push_to_sheets(df, sheets_token):
+    """Push dataframe to a new formatted Google Sheet using OAuth token."""
+    headers = {
+        "Authorization": f"Bearer {sheets_token}",
+        "Content-Type": "application/json"
+    }
+
+    # 1. Create spreadsheet
+    title = f"SEO GEO Audit {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    resp = requests.post(
+        "https://sheets.googleapis.com/v4/spreadsheets",
+        headers=headers,
+        json={"properties": {"title": title}}
+    )
+    resp.raise_for_status()
+    ss = resp.json()
+    ss_id   = ss["spreadsheetId"]
+    sheet_id = ss["sheets"][0]["properties"]["sheetId"]
+    url_out = f"https://docs.google.com/spreadsheets/d/{ss_id}"
+
+    # 2. Write all data
+    values = [df.columns.tolist()] + df.values.tolist()
+    requests.put(
+        f"https://sheets.googleapis.com/v4/spreadsheets/{ss_id}/values/A1",
+        headers=headers,
+        params={"valueInputOption": "RAW"},
+        json={"values": [[str(c) for c in row] for row in values]}
+    )
+
+    # 3. Write URLs as hyperlinks
+    url_formulas = [[f'=HYPERLINK("{row}","{row}")'] for row in df["URL"].tolist()]
+    requests.put(
+        f"https://sheets.googleapis.com/v4/spreadsheets/{ss_id}/values/A2",
+        headers=headers,
+        params={"valueInputOption": "USER_ENTERED"},
+        json={"values": url_formulas}
+    )
+
+    num_rows = len(df) + 1
+    num_cols = len(df.columns)
+    SCORE_COLS = [8, 9, 10, 11, 12, 13, 14, 15]  # Overall → Images (0-indexed)
+
+    batch = []
+
+    # Dark header
+    batch.append({"repeatCell": {
+        "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1,
+                  "startColumnIndex": 0, "endColumnIndex": num_cols},
+        "cell": {"userEnteredFormat": {
+            "backgroundColor": {"red": 0.15, "green": 0.15, "blue": 0.15},
+            "textFormat": {"bold": True, "fontSize": 10,
+                           "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
+            "verticalAlignment": "MIDDLE",
+            "padding": {"top": 8, "bottom": 8, "left": 8, "right": 8}
+        }},
+        "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,padding)"
+    }})
+
+    # Freeze header + URL col
+    batch.append({"updateSheetProperties": {
+        "properties": {"sheetId": sheet_id,
+                       "gridProperties": {"frozenRowCount": 1, "frozenColumnCount": 1}},
+        "fields": "gridProperties(frozenRowCount,frozenColumnCount)"
+    }})
+
+    # Row height
+    batch.append({"updateDimensionProperties": {
+        "range": {"sheetId": sheet_id, "dimension": "ROWS",
+                  "startIndex": 0, "endIndex": num_rows},
+        "properties": {"pixelSize": 40},
+        "fields": "pixelSize"
+    }})
+
+    # Alternating rows + score colors + action/opp colors
+    for row_idx, (_, row) in enumerate(df.iterrows(), start=1):
+        bg = {"red": 1.0, "green": 1.0, "blue": 1.0} if row_idx % 2 == 1 else {"red": 0.97, "green": 0.97, "blue": 0.97}
+        batch.append({"repeatCell": {
+            "range": {"sheetId": sheet_id, "startRowIndex": row_idx,
+                      "endRowIndex": row_idx + 1, "startColumnIndex": 0, "endColumnIndex": num_cols},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": bg,
+                "textFormat": {"fontSize": 10},
+                "verticalAlignment": "MIDDLE",
+                "padding": {"top": 6, "bottom": 6, "left": 8, "right": 8}
+            }},
+            "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,padding)"
+        }})
+
+        # Score cells
+        row_vals = row.tolist()
+        for col_idx in SCORE_COLS:
+            if col_idx < len(row_vals):
+                batch.append({"repeatCell": {
+                    "range": {"sheetId": sheet_id, "startRowIndex": row_idx,
+                              "endRowIndex": row_idx + 1,
+                              "startColumnIndex": col_idx, "endColumnIndex": col_idx + 1},
+                    "cell": {"userEnteredFormat": {
+                        "backgroundColor": score_color_rgb(row_vals[col_idx]),
+                        "horizontalAlignment": "CENTER",
+                        "textFormat": {"bold": True, "fontSize": 10}
+                    }},
+                    "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)"
+                }})
+
+        # Action (6Rs) col = 5
+        action = str(row_vals[5]) if len(row_vals) > 5 else ""
+        batch.append({"repeatCell": {
+            "range": {"sheetId": sheet_id, "startRowIndex": row_idx,
+                      "endRowIndex": row_idx + 1, "startColumnIndex": 5, "endColumnIndex": 6},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": ACTION_COLORS_RGB.get(action, bg),
+                "horizontalAlignment": "CENTER",
+                "textFormat": {"bold": True, "fontSize": 10}
+            }},
+            "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)"
+        }})
+
+        # Opportunity Type col = 6
+        opp = str(row_vals[6]) if len(row_vals) > 6 else ""
+        batch.append({"repeatCell": {
+            "range": {"sheetId": sheet_id, "startRowIndex": row_idx,
+                      "endRowIndex": row_idx + 1, "startColumnIndex": 6, "endColumnIndex": 7},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": OPPORTUNITY_COLORS_RGB.get(opp, bg),
+                "horizontalAlignment": "CENTER",
+                "textFormat": {"bold": True, "fontSize": 10}
+            }},
+            "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)"
+        }})
+
+    # Column widths
+    col_widths = {0:280,1:70,2:110,3:65,4:75,5:120,6:170,7:300,
+                  8:75,9:100,10:100,11:95,12:75,13:110,14:70,15:75,
+                  16:300,17:300,18:300}
+    for col_idx, width in col_widths.items():
+        if col_idx < num_cols:
+            batch.append({"updateDimensionProperties": {
+                "range": {"sheetId": sheet_id, "dimension": "COLUMNS",
+                          "startIndex": col_idx, "endIndex": col_idx + 1},
+                "properties": {"pixelSize": width},
+                "fields": "pixelSize"
+            }})
+
+    # Wrap text columns
+    for col_idx in [7, 16, 17, 18]:
+        if col_idx < num_cols:
+            batch.append({"repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 1,
+                          "endRowIndex": num_rows, "startColumnIndex": col_idx,
+                          "endColumnIndex": col_idx + 1},
+                "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP"}},
+                "fields": "userEnteredFormat.wrapStrategy"
+            }})
+
+    # Apply all formatting
+    requests.post(
+        f"https://sheets.googleapis.com/v4/spreadsheets/{ss_id}:batchUpdate",
+        headers=headers,
+        json={"requests": batch}
+    )
+
+    return url_out
+
 # ── UI ─────────────────────────────────────────────────────────
 
 st.title("🔍 SEO + GEO Bulk Auditor")
-st.caption("Powered by Claude Haiku · Includes GSC performance data · 6Rs action framework")
+st.caption("Powered by Claude Haiku · GSC performance data · 6Rs action framework")
 
-# Sidebar config
 with st.sidebar:
     st.header("⚙️ Settings")
     api_key = st.text_input("Anthropic API key", type="password", placeholder="sk-ant-...")
@@ -268,13 +429,34 @@ with st.sidebar:
         st.success(f"✓ {len(gsc_data)} URLs loaded from GSC")
     else:
         gsc_data = {}
-        st.info("No GSC file — scores will be based on HTML only")
+        st.info("No GSC file — HTML analysis only")
     st.divider()
-    st.caption("💡 Tip: export from GSC → Performance → Pages → Export")
+    st.header("📊 Google Sheets")
+    sheets_token = st.text_input(
+        "Google OAuth token",
+        type="password",
+        placeholder="ya29.a...",
+        help="Get this from developers.google.com/oauthplayground — authorize the Sheets + Drive APIs"
+    )
+    if sheets_token:
+        st.success("✓ Token ready")
+    else:
+        with st.expander("How to get a token"):
+            st.markdown("""
+1. Go to [OAuth Playground](https://developers.google.com/oauthplayground)
+2. In Step 1, select:
+   - `Google Sheets API v4` → `https://www.googleapis.com/auth/spreadsheets`
+   - `Drive API v3` → `https://www.googleapis.com/auth/drive.file`
+3. Click **Authorize APIs**
+4. Click **Exchange authorization code for tokens**
+5. Copy the **Access token** and paste it above
 
-# Main area
+⚠️ Tokens expire after 1 hour — get a fresh one each session.
+            """)
+    st.divider()
+    st.caption("💡 GSC: Performance → Pages → Export")
+
 col1, col2 = st.columns([2, 1])
-
 with col1:
     st.subheader("URLs to audit")
     url_input = st.text_area(
@@ -282,7 +464,6 @@ with col1:
         height=200,
         placeholder="https://example.com/page-1\nhttps://example.com/page-2"
     )
-
 with col2:
     st.subheader("About this tool")
     st.markdown("""
@@ -294,25 +475,22 @@ with col2:
     """)
 
 urls = [u.strip() for u in url_input.strip().splitlines() if u.strip().startswith("http")]
-
 if urls:
     st.info(f"**{len(urls)} URL{'s' if len(urls) > 1 else ''}** ready to audit")
 
 run = st.button("▶ Run Audit", type="primary", disabled=not (api_key and urls))
-
 if not api_key:
     st.warning("Add your Anthropic API key in the sidebar to get started.")
 
-# ── Run audit ──────────────────────────────────────────────────
 if run and api_key and urls:
     client = anthropic.Anthropic(api_key=api_key)
     results = []
-    errors = []
+    errors  = []
 
     st.divider()
     st.subheader(f"Auditing {len(urls)} URL{'s' if len(urls) > 1 else ''}...")
-    progress = st.progress(0)
-    status = st.empty()
+    progress  = st.progress(0)
+    status    = st.empty()
     results_container = st.container()
 
     for i, url in enumerate(urls):
@@ -320,19 +498,17 @@ if run and api_key and urls:
         gsc = get_gsc_metrics(gsc_data, url)
 
         try:
-            html = fetch_html(url)
+            html   = fetch_html(url)
             result = audit_page(client, url, html, gsc)
             result["url"] = url
             results.append((result, gsc))
 
-            # Show live result card
-            s = result.get("scores", {})
+            s      = result.get("scores", {})
             action = get_action(result)
-            opp = OPPORTUNITY_LABELS.get(
-                (result.get("gsc_insights") or {}).get("opportunity_type", ""), ""
-            )
+            opp    = OPPORTUNITY_LABELS.get((result.get("gsc_insights") or {}).get("opportunity_type", ""), "")
+
             with results_container:
-                with st.expander(f"{'✓'} {url} — Overall: {s.get('overall', '?')}/100", expanded=False):
+                with st.expander(f"✓ {url} — Overall: {s.get('overall', '?')}/100", expanded=False):
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric("Overall", s.get("overall", "?"))
                     c2.metric("Action", action)
@@ -356,10 +532,8 @@ if run and api_key and urls:
                         st.error("🚨 Critical: " + " · ".join(priorities["critical"]))
                     if priorities.get("high"):
                         st.warning("⚠️ High: " + " · ".join(priorities["high"]))
-
-                    quick_wins = result.get("quick_wins", [])
-                    if quick_wins:
-                        st.success("⚡ Quick wins: " + " · ".join(quick_wins))
+                    if result.get("quick_wins"):
+                        st.success("⚡ Quick wins: " + " · ".join(result["quick_wins"]))
 
         except Exception as e:
             errors.append((url, str(e)))
@@ -372,26 +546,41 @@ if run and api_key and urls:
 
     status.markdown(f"✅ **Done!** {len(results)} audited, {len(errors)} failed.")
 
-    # ── Export ─────────────────────────────────────────────────
     if results:
         st.divider()
         st.subheader("📊 Export results")
 
         df = results_to_df(results)
 
+        col_a, col_b = st.columns(2)
+
         # CSV download
-        csv_buffer = io.StringIO()
-        df.to_csv(csv_buffer, index=False)
-        st.download_button(
-            label="⬇ Download CSV",
-            data=csv_buffer.getvalue(),
-            file_name=f"seo_audit_{datetime.now().strftime('%Y-%m-%d')}.csv",
-            mime="text/csv"
-        )
+        with col_a:
+            csv_buffer = io.StringIO()
+            df.to_csv(csv_buffer, index=False)
+            st.download_button(
+                label="⬇ Download CSV",
+                data=csv_buffer.getvalue(),
+                file_name=f"seo_audit_{datetime.now().strftime('%Y-%m-%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
 
-        st.caption("💡 To get it into Google Sheets: download the CSV → open Sheets → File → Import")
+        # Google Sheets push
+        with col_b:
+            if sheets_token:
+                if st.button("📊 Push to Google Sheets", type="primary", use_container_width=True):
+                    with st.spinner("Creating formatted Google Sheet..."):
+                        try:
+                            sheet_url = push_to_sheets(df, sheets_token)
+                            st.success("✓ Sheet created!")
+                            st.markdown(f"**[Open in Google Sheets]({sheet_url})**")
+                        except Exception as e:
+                            st.error(f"Failed to create sheet: {e}")
+                            st.caption("Your OAuth token may have expired — get a fresh one from the sidebar.")
+            else:
+                st.info("Add a Google OAuth token in the sidebar to push directly to Sheets.")
 
-        # Full results table
         st.divider()
         st.subheader("📋 Full results table")
         st.dataframe(df, use_container_width=True, height=400)
